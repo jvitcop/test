@@ -1,0 +1,101 @@
+version: 2
+
+defaults: &defaults
+  circleci_ip_ranges: true
+  docker:
+    - image: docker:18.06.0-ce
+
+jobs:
+  run_tests:
+    circleci_ip_ranges: true
+    docker:
+      - image: golang:1.16-alpine
+      - image: postgres:12
+        environment:
+          POSTGRES_USER: template
+          POSTGRES_PASSWORD: t3mpl473
+          POSTGRES_DB: template
+    parallelism: 1
+    steps:
+      - checkout
+
+      - run:
+          name: Installing dependencies
+          command: |
+            apk update && apk add --no-cache git
+            apk add build-base
+      - run:
+          name: Waiting for Postgres to be ready
+          command: |
+            for i in `seq 1 10`;
+            do
+              nc -z localhost 5432 && echo Success && exit 0
+              echo -n .
+              sleep 1
+            done
+            echo Failed waiting for Postgres && exit 1
+      #      - run:
+      #          name: Migrate
+      #          command: |
+      #            cd src/api
+      #            go run database/migrate.go
+      #      - run:
+      #          name: Build
+      #          command: |
+      #            cd src/api
+      #            go build .
+      - run:
+          name: Run tests
+          command: |
+            cd src/api
+            go test ./...
+
+  build_and_push:
+    <<: *defaults
+    steps:
+      - checkout
+
+      - setup_remote_docker
+
+      - run:
+          name: Docker login and dockerfiles
+          command: |
+            docker login -u $DOCKERHUB_USER -p $DOCKERHUB_PASS
+            if [ $? -ne 0 ]; then
+                echo 'There was a docker login error.'
+                exit 1
+            fi
+
+      - run:
+          name: Build
+          command: |
+            docker build -t mercadolibre/fury-core-go-template:$CIRCLE_TAG .
+            if [ $? -ne 0 ]; then
+                echo 'There was a building error.'
+                exit 1
+            fi
+
+      - run:
+          name: Push
+          command: |
+            docker push mercadolibre/fury-core-go-template:$CIRCLE_TAG
+            if [ $? -ne 0 ]; then
+                echo 'There was an error pushing the image.'
+                exit 1
+            fi
+
+workflows:
+  version: 2
+
+  validate-commit:
+    jobs:
+      - run_tests
+
+  production-environment:
+    jobs:
+      - build_and_push:
+          filters:
+            tags:
+              only: /^[\d]+\.[\d]+\.[\d]+(\-rc\-.+)?$/
+            branches:
+              ignore: /.*/
